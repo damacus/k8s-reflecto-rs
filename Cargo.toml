@@ -1,5 +1,5 @@
 [package]
-name = "k8s-reflector-rs"
+name = "k8s-reflecto-rs"
 version = "0.1.4"
 edition = "2024"
 license = "MIT"

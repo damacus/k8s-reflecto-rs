@@ -793,7 +793,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "k8s-reflector-rs"
+name = "k8s-reflecto-rs"
 version = "0.1.4"
 dependencies = [
  "base64 0.23.1",
