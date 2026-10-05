@@ -26,6 +26,8 @@ const SESSION_GRACE: Duration = Duration::from_secs(3);
 /// Client-side bound on a silent read — same dead-stream guard we added to
 /// k8s-sidecar-rs: a half-open socket can't stall past this.
 const READ_IDLE_LIMIT: Duration = Duration::from_secs(120);
+/// Pause between a faulted session and the reconnect attempt.
+const FAULT_BACKOFF: Duration = Duration::from_secs(2);
 
 /// A unit of work dispatched to the mirrors.
 #[derive(Debug)]
@@ -79,6 +81,12 @@ where
             Err(e) => {
                 error!(stream = ctx.stream_id, error = %e, "watch session faulted");
                 ctx.health.stream_dead(ctx.stream_id);
+                // Back off before relist — a persistent API failure must not
+                // hot-loop against the apiserver.
+                tokio::select! {
+                    _ = ctx.cancel.cancelled() => return,
+                    _ = tokio::time::sleep(FAULT_BACKOFF) => {}
+                }
             }
         }
         // Session close → mirrors drop cached state; the relist replays
@@ -97,7 +105,10 @@ where
     A: Fn(&K) -> Dispatch + Send + Sync,
     D: Fn(&K) -> Dispatch + Send + Sync,
 {
-    let wp = WatchParams::default().timeout(ctx.timeout_secs as u32);
+    // No timeoutSeconds: kube validates <295s anyway, and upstream rotates
+    // sessions via its own watchdog — our `deadline` below does the same.
+    // The apiserver then picks ~30-60min (minRequestTimeout window).
+    let wp = WatchParams::default();
     let mut events = api
         .watch(&wp, "0")
         .await
