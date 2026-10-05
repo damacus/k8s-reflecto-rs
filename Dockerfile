@@ -5,9 +5,9 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY src ./src
 RUN cargo build --release --locked \
-    && file target/release/kubernetes-reflector-rs | grep -q "static-pie linked\|statically linked"
+    && file target/release/k8s-reflector-rs | grep -q "static-pie linked\|statically linked"
 
 FROM scratch
-COPY --from=builder /src/target/release/kubernetes-reflector-rs /kubernetes-reflector-rs
+COPY --from=builder /src/target/release/k8s-reflector-rs /k8s-reflector-rs
 USER 65534:65534
-ENTRYPOINT ["/kubernetes-reflector-rs"]
+ENTRYPOINT ["/k8s-reflector-rs"]

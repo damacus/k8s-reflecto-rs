@@ -5,10 +5,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
-use kubernetes_reflector_rs::mirror::{
-    ApiError, Event, Mirror, Mirrorable, Namespace, ResourceStore,
-};
-use kubernetes_reflector_rs::props::{NsName, annotations, properties_from};
+use k8s_reflector_rs::mirror::{ApiError, Event, Mirror, Mirrorable, Namespace, ResourceStore};
+use k8s_reflector_rs::props::{NsName, annotations, properties_from};
 use serde_json::json;
 
 /// A test resource: annotations + data blob + resourceVersion.
@@ -55,7 +53,7 @@ impl Mirrorable for TestRes {
     fn annotations(&self) -> Option<&BTreeMap<String, String>> {
         Some(&self.annotations)
     }
-    fn properties(&self) -> kubernetes_reflector_rs::props::MirroringProperties {
+    fn properties(&self) -> k8s_reflector_rs::props::MirroringProperties {
         properties_from(Some(&self.annotations), &self.rv)
     }
     fn clone_for_reflection(&self) -> Self {

@@ -1,4 +1,4 @@
-# kubernetes-reflector-rs
+# k8s-reflector-rs
 
 A Rust re-implementation of
 [EmberStack/kubernetes-reflector](https://github.com/emberstack/kubernetes-reflector):

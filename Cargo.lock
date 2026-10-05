@@ -793,6 +793,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "k8s-reflector-rs"
+version = "0.1.2"
+dependencies = [
+ "base64 0.23.1",
+ "futures-util",
+ "json-patch",
+ "k8s-openapi",
+ "kube",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "kube"
 version = "4.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -883,27 +904,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
-]
-
-[[package]]
-name = "kubernetes-reflector-rs"
-version = "0.1.2"
-dependencies = [
- "base64 0.23.1",
- "futures-util",
- "json-patch",
- "k8s-openapi",
- "kube",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

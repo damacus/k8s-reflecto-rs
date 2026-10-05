@@ -7,13 +7,13 @@ use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
 
-use kubernetes_reflector_rs::config::Config;
-use kubernetes_reflector_rs::health::{self, HealthState};
-use kubernetes_reflector_rs::kobj::{ConfigMapObj, SecretObj};
-use kubernetes_reflector_rs::mirror::{self, Mirror};
-use kubernetes_reflector_rs::selector::parse_glob_patterns;
-use kubernetes_reflector_rs::store::KubeStore;
-use kubernetes_reflector_rs::watch::{self, Dispatch, WatchCtx, WatcherKind};
+use k8s_reflector_rs::config::Config;
+use k8s_reflector_rs::health::{self, HealthState};
+use k8s_reflector_rs::kobj::{ConfigMapObj, SecretObj};
+use k8s_reflector_rs::mirror::{self, Mirror};
+use k8s_reflector_rs::selector::parse_glob_patterns;
+use k8s_reflector_rs::store::KubeStore;
+use k8s_reflector_rs::watch::{self, Dispatch, WatchCtx, WatcherKind};
 
 const EVENT_QUEUE: usize = 1024;
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
@@ -35,7 +35,7 @@ async fn run() -> i32 {
         }
     };
     init_logging(&cfg.log_level);
-    info!("kubernetes-reflector-rs starting");
+    info!("k8s-reflector-rs starting");
 
     let client = match Client::try_default().await {
         Ok(c) => c,
@@ -228,7 +228,7 @@ async fn wait_for_shutdown() {
 fn init_logging(level: &str) {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new(format!(
-            "kubernetes_reflector_rs={}",
+            "k8s_reflector_rs={}",
             match level.to_ascii_lowercase().as_str() {
                 "verbose" | "trace" => "trace",
                 "debug" => "debug",

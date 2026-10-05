@@ -1,5 +1,5 @@
 [package]
-name = "kubernetes-reflector-rs"
+name = "k8s-reflector-rs"
 version = "0.1.2"
 edition = "2024"
 license = "MIT"
