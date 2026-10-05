@@ -1,4 +1,4 @@
-msrv = "1.92.0"
+msrv = "1.99.0"
 cognitive-complexity-threshold = 30
 disallowed-methods = [
     { path = "std::env::var", reason = "read config via the designated config loader" },
