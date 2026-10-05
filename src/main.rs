@@ -37,7 +37,20 @@ async fn run() -> i32 {
     init_logging(&cfg.log_level);
     info!("k8s-reflector-rs starting");
 
-    let client = match Client::try_default().await {
+    let mut kube_config = match kube::Config::infer().await {
+        Ok(c) => c,
+        Err(e) => {
+            error!(error = %e, "failed to infer kubernetes config");
+            return 2;
+        }
+    };
+    if cfg.skip_tls_verify {
+        tracing::warn!(
+            "ES_Ignite__KubernetesClient__SkipTlsVerify is set - TLS certificate verification disabled"
+        );
+        kube_config.accept_invalid_certs = true;
+    }
+    let client = match Client::try_from(kube_config) {
         Ok(c) => c,
         Err(e) => {
             error!(error = %e, "failed to build kubernetes client");
