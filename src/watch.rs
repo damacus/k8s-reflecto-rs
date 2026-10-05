@@ -1,8 +1,10 @@
-//! Watch sessions — port of upstream `WatcherBackgroundService`: a session
-//! runs until the apiserver closes the stream (timeoutSeconds), the client
-//! hits an absolute deadline (timeout + grace), or a read stalls. On session
-//! close the mirrors get `watcher_closed` and the loop relists — upstream
-//! relies on the relist replay to re-validate all cached state.
+//! Watch sessions — port of upstream `WatcherBackgroundService`.
+//!
+//! A session runs until the apiserver closes the stream
+//! (timeoutSeconds), the client hits an absolute deadline (timeout +
+//! grace), or a read stalls. On session close the mirrors get
+//! `watcher_closed` and the loop relists — upstream relies on the relist
+//! replay to re-validate all cached state.
 
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -64,6 +66,8 @@ pub struct WatchCtx<K, A, D> {
 }
 
 /// Watch a resource kind, forwarding events to `tx` until cancelled.
+// Generic future — Send-ness is checked at the `JoinSet::spawn` call site.
+#[allow(clippy::future_not_send)]
 pub async fn run<K, A, D>(ctx: WatchCtx<K, A, D>)
 where
     K: Resource + Clone + Debug + DeserializeOwned + Send + 'static,
@@ -84,8 +88,8 @@ where
                 // Back off before relist — a persistent API failure must not
                 // hot-loop against the apiserver.
                 tokio::select! {
-                    _ = ctx.cancel.cancelled() => return,
-                    _ = tokio::time::sleep(FAULT_BACKOFF) => {}
+                    () = ctx.cancel.cancelled() => return,
+                    () = tokio::time::sleep(FAULT_BACKOFF) => {}
                 }
             }
         }
@@ -98,6 +102,8 @@ where
     }
 }
 
+// Generic future — Send-ness is checked at the `JoinSet::spawn` call site.
+#[allow(clippy::future_not_send)]
 async fn session<K, A, D>(api: &Api<K>, ctx: &WatchCtx<K, A, D>) -> Result<&'static str, String>
 where
     K: Resource + Clone + Debug + DeserializeOwned + Send,
@@ -126,8 +132,8 @@ where
 
     loop {
         let next = tokio::select! {
-            _ = ctx.cancel.cancelled() => return Ok("cancelled"),
-            _ = tokio::time::sleep_until(deadline) => return Ok("session timeout reached"),
+            () = ctx.cancel.cancelled() => return Ok("cancelled"),
+            () = tokio::time::sleep_until(deadline) => return Ok("session timeout reached"),
             item = tokio::time::timeout(READ_IDLE_LIMIT, events.next()) => match item {
                 Ok(i) => i,
                 Err(_) => return Ok("watch read idle; reconnecting"),

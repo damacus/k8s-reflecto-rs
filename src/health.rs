@@ -1,4 +1,6 @@
-//! `/healthz` — same semantics as k8s-sidecar-rs: readiness once every watch
+//! `/healthz` probe server.
+//!
+//! Same semantics as k8s-sidecar-rs: readiness once every watch
 //! stream completed an initial sync; liveness while each stream has had API
 //! contact within 2× its heartbeat and no stream task died.
 
@@ -24,6 +26,7 @@ pub struct HealthState {
 }
 
 impl HealthState {
+    #[must_use]
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             ready: AtomicBool::new(false),
@@ -36,7 +39,11 @@ impl HealthState {
     }
 
     pub fn register_stream(&self, stream: &str, heartbeat: Duration) {
-        let mut i = self.inner.lock().unwrap();
+        // A poisoned lock still holds usable state — recover the guard.
+        let mut i = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         i.alive.insert(stream.to_string(), true);
         i.contact
             .insert(stream.to_string(), (Instant::now(), 2 * heartbeat));
@@ -66,16 +73,20 @@ impl HealthState {
     /// Liveness — watcher tasks alive and each stream has had API contact
     /// within its staleness window. Readiness is not required.
     pub fn live(&self) -> (u16, &'static str) {
-        let inner = self.inner.lock().unwrap();
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if inner.alive.values().any(|a| !*a) {
             return (503, "NOT LIVE (watcher task died)");
         }
         let now = Instant::now();
-        if inner
+        let stale = inner
             .contact
             .values()
-            .any(|(t, th)| now.duration_since(*t) > *th)
-        {
+            .any(|(t, th)| now.duration_since(*t) > *th);
+        drop(inner);
+        if stale {
             return (503, "NOT LIVE (K8s contact lost)");
         }
         (200, "OK")
@@ -90,19 +101,19 @@ impl HealthState {
     }
 }
 
-/// Serves `/healthz`. On bind failure the task parks until cancel rather
-/// than exiting — main treats a completed worker as fatal, and upstream
-/// (daemon health thread) never let a port conflict kill the process.
+/// Serves `/healthz`, parking until cancel on bind failure.
+///
+/// The task must not exit: main treats a completed worker as fatal, and
+/// upstream (daemon health thread) never let a port conflict kill the
+/// process.
 pub async fn serve(state: Arc<HealthState>, port: u16, cancel: CancellationToken) {
-    let listener =
-        match TcpListener::bind(("::", port)).or_else(|_| TcpListener::bind(("0.0.0.0", port))) {
-            Ok(l) => l,
-            Err(_) => {
-                error!(port, "health server failed to bind");
-                cancel.cancelled().await;
-                return;
-            }
-        };
+    let Ok(listener) =
+        TcpListener::bind(("::", port)).or_else(|_| TcpListener::bind(("0.0.0.0", port)))
+    else {
+        error!(port, "health server failed to bind");
+        cancel.cancelled().await;
+        return;
+    };
     info!(port, "health server listening");
 
     if let Err(e) = listener.set_nonblocking(true) {
@@ -134,11 +145,11 @@ pub async fn serve(state: Arc<HealthState>, port: u16, cancel: CancellationToken
 
     loop {
         tokio::select! {
-            _ = cancel.cancelled() => break,
+            () = cancel.cancelled() => break,
             Some(stream) = rx.recv() => {
                 let st = state.clone();
                 tokio::spawn(async move {
-                    tokio::task::spawn_blocking(move || handle(stream, st)).await.ok();
+                    tokio::task::spawn_blocking(move || handle(&stream, &st)).await.ok();
                 });
             }
         }
@@ -158,9 +169,9 @@ fn route(path: &str, state: &HealthState) -> (u16, &'static str) {
 
 const MAX_REQUEST_BYTES: u64 = 8 * 1024;
 
-fn handle(stream: std::net::TcpStream, state: Arc<HealthState>) {
+fn handle(stream: &std::net::TcpStream, state: &HealthState) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-    let mut reader = BufReader::new((&stream).take(MAX_REQUEST_BYTES));
+    let mut reader = BufReader::new(stream.take(MAX_REQUEST_BYTES));
     let mut request_line = String::new();
     if reader.read_line(&mut request_line).is_err() || request_line.is_empty() {
         return;
@@ -174,19 +185,20 @@ fn handle(stream: std::net::TcpStream, state: Arc<HealthState>) {
     for line in reader.lines() {
         match line {
             Ok(l) if l.is_empty() => break,
-            Ok(_) => continue,
+            Ok(_) => {}
             Err(_) => return,
         }
     }
 
-    let (status, body) = route(path, &state);
+    let (status, body) = route(path, state);
     let reason = match status {
         200 => "OK",
         404 => "Not Found",
         _ => "Service Unavailable",
     };
+    let mut out = stream;
     let _ = write!(
-        &mut &stream,
+        &mut out,
         "HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );

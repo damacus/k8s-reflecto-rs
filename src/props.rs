@@ -48,6 +48,7 @@ impl NsName {
         }
     }
 
+    #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         let (ns, name) = s.split_once('/')?;
         // Segments flow into API request paths and object identities — only
@@ -61,6 +62,7 @@ impl NsName {
 
     /// Same name, different namespace — used when projecting a source into a
     /// target namespace.
+    #[must_use]
     pub fn in_namespace(&self, namespace: &str) -> Self {
         Self::new(namespace, &self.name)
     }
@@ -69,10 +71,15 @@ impl NsName {
 /// DNS-1123 label — namespace names.
 fn is_dns_label(s: &str) -> bool {
     let bytes = s.as_bytes();
-    !s.is_empty()
-        && s.len() <= 63
-        && bytes[0].is_ascii_alphanumeric()
-        && bytes[bytes.len() - 1].is_ascii_alphanumeric()
+    let Some(&first) = bytes.first() else {
+        return false;
+    };
+    let Some(&last) = bytes.last() else {
+        return false;
+    };
+    s.len() <= 63
+        && first.is_ascii_alphanumeric()
+        && last.is_ascii_alphanumeric()
         && s.bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
@@ -106,13 +113,15 @@ pub struct MirroringProperties {
 }
 
 impl MirroringProperties {
-    pub fn is_reflection(&self) -> bool {
+    #[must_use]
+    pub const fn is_reflection(&self) -> bool {
         self.reflects.is_some()
     }
 
     /// Source permits direct reflection to `ns` — OR between the name-pattern
     /// list and the label selector. `ns_labels: None` means the namespace
     /// object isn't cached, which fails closed when a selector is configured.
+    #[must_use]
     pub fn can_be_reflected_to(
         &self,
         ns: &str,
@@ -124,6 +133,7 @@ impl MirroringProperties {
     }
 
     /// Source permits auto-reflection to `ns`.
+    #[must_use]
     pub fn can_be_auto_reflected_to(
         &self,
         ns: &str,
@@ -137,6 +147,7 @@ impl MirroringProperties {
 
     /// Parse errors for the two selector annotations, one message per
     /// malformed selector — surfaced as warnings so operators get feedback.
+    #[must_use]
     pub fn label_selector_errors(&self) -> Vec<String> {
         let mut errors = Vec::new();
         for (annotation, value) in [
@@ -163,13 +174,11 @@ impl MirroringProperties {
 }
 
 fn truthy(v: Option<&String>) -> bool {
-    matches!(
-        v.map(String::as_str),
-        Some("true") | Some("True") | Some("TRUE")
-    )
+    matches!(v.map(String::as_str), Some("true" | "True" | "TRUE"))
 }
 
 /// Extract mirroring properties from an object's annotations map.
+#[must_use]
 pub fn properties_from(
     annotations: Option<&BTreeMap<String, String>>,
     resource_version: &str,
@@ -310,8 +319,7 @@ mod tests {
             (annotations::ALLOWED_NAMESPACES_SELECTOR, "team=platform"),
         ]);
         let p = properties_from(Some(&a), "1");
-        let labels: BTreeMap<String, String> =
-            [("team".into(), "platform".into())].into_iter().collect();
+        let labels: BTreeMap<String, String> = BTreeMap::from([("team".into(), "platform".into())]);
         assert!(p.can_be_reflected_to("any-name", Some(&labels)));
         assert!(!p.can_be_reflected_to("any-name", Some(&BTreeMap::new())));
         // Namespace not cached + selector configured → fail closed.

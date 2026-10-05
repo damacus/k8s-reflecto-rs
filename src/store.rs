@@ -10,10 +10,12 @@ use crate::kobj::{ConfigMapObj, SecretObj};
 use crate::mirror::{ApiError, Mirrorable, Namespace, ResourceStore};
 use crate::props::NsName;
 
-/// Adapts `kube::Api<K>` to the engine's store trait. `W` is the
-/// `Mirrorable` wrapper (SecretObj/ConfigMapObj), `K` the k8s-openapi type.
-/// Holds the client rather than a bound `Api` so namespaced calls can build
-/// the right `Api::namespaced` per call (a `Api::all` can't `get` namespaced).
+/// Adapts `kube::Api<K>` to the engine's store trait.
+///
+/// `W` is the `Mirrorable` wrapper (SecretObj/ConfigMapObj), `K` the
+/// k8s-openapi type. Holds the client rather than a bound `Api` so
+/// namespaced calls can build the right `Api::namespaced` per call (a
+/// `Api::all` can't `get` namespaced).
 pub struct KubeStore<W, K> {
     client: Client,
     _phantom: std::marker::PhantomData<(W, K)>,
@@ -24,7 +26,8 @@ where
     K: Resource<Scope = k8s_openapi::NamespaceResourceScope>,
     K::DynamicType: Default,
 {
-    pub fn new(client: Client) -> Self {
+    #[must_use]
+    pub const fn new(client: Client) -> Self {
         Self {
             client,
             _phantom: std::marker::PhantomData,
@@ -36,7 +39,7 @@ where
     }
 }
 
-fn to_api_error(e: kube::Error) -> ApiError {
+fn to_api_error(e: &kube::Error) -> ApiError {
     match &e {
         kube::Error::Api(ae) if ae.code == 404 => ApiError::NotFound,
         kube::Error::Api(ae) if ae.code == 409 => ApiError::Conflict,
@@ -92,7 +95,7 @@ where
             .get(&id.name)
             .await
             .map(W::from_inner)
-            .map_err(to_api_error)
+            .map_err(|e| to_api_error(&e))
     }
 
     async fn list_by_name(&self, name: &str) -> Result<Vec<W>, ApiError> {
@@ -101,7 +104,7 @@ where
             .list(&lp)
             .await
             .map(|l| l.items.into_iter().map(W::from_inner).collect())
-            .map_err(to_api_error)
+            .map_err(|e| to_api_error(&e))
     }
 
     async fn list_namespaces(&self) -> Result<Vec<Namespace>, ApiError> {
@@ -109,7 +112,7 @@ where
             .list(&ListParams::default())
             .await
             .map(|l| l.items.iter().map(Namespace::from).collect())
-            .map_err(to_api_error)
+            .map_err(|e| to_api_error(&e))
     }
 
     async fn create(&self, obj: &W, ns: &str) -> Result<W, ApiError> {
@@ -117,7 +120,7 @@ where
             .create(&PostParams::default(), &obj.clone().into_inner())
             .await
             .map(W::from_inner)
-            .map_err(to_api_error)
+            .map_err(|e| to_api_error(&e))
     }
 
     async fn patch(&self, id: &NsName, patch: serde_json::Value) -> Result<(), ApiError> {
@@ -128,7 +131,7 @@ where
             .patch(&id.name, &PatchParams::default(), &Patch::Json::<K>(patch))
             .await
             .map(|_| ())
-            .map_err(to_api_error)
+            .map_err(|e| to_api_error(&e))
     }
 
     async fn delete(&self, id: &NsName) -> Result<(), ApiError> {
@@ -136,6 +139,6 @@ where
             .delete(&id.name, &DeleteParams::default())
             .await
             .map(|_| ())
-            .map_err(to_api_error)
+            .map_err(|e| to_api_error(&e))
     }
 }

@@ -22,6 +22,8 @@ pub struct Config {
 }
 
 impl Config {
+    // The designated config loader — the one sanctioned `env::var` site.
+    #[allow(clippy::disallowed_methods)]
     pub fn from_env() -> Result<Self, String> {
         // The deployed Helm chart may set the var with an empty value —
         // upstream's IOptions binding treats that as the default.
@@ -47,11 +49,10 @@ impl Config {
         }
 
         let health_raw = env::var("HEALTH_PORT").unwrap_or_else(|_| "8080".into());
-        let health_port: u32 = health_raw
-            .trim()
-            .parse()
-            .map_err(|_| format!("HEALTH_PORT must be an integer, got '{health_raw}'"))?;
-        if !(1..=65535).contains(&health_port) {
+        let health_port: u16 = health_raw.trim().parse().map_err(|_| {
+            format!("HEALTH_PORT must be an integer in 1..=65535, got '{health_raw}'")
+        })?;
+        if health_port == 0 {
             return Err(format!(
                 "HEALTH_PORT must be in 1..=65535, got {health_port}"
             ));
@@ -64,13 +65,13 @@ impl Config {
             skip_tls_verify: truthy_env("ES_Ignite__KubernetesClient__SkipTlsVerify"),
             log_level: env::var("ES_Serilog__MinimumLevel__Default")
                 .unwrap_or_else(|_| "Information".into()),
-            health_port: health_port as u16,
+            health_port,
         })
     }
 }
 
+// Reads one raw env var for the config loader above.
+#[allow(clippy::disallowed_methods)]
 fn truthy_env(key: &str) -> bool {
-    env::var(key)
-        .map(|v| matches!(v.as_str(), "true" | "True" | "TRUE" | "1"))
-        .unwrap_or(false)
+    env::var(key).is_ok_and(|v| matches!(v.as_str(), "true" | "True" | "TRUE" | "1"))
 }

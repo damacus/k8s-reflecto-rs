@@ -1,3 +1,46 @@
+#![warn(
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::cargo,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::exit,
+    clippy::dbg_macro,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::unreachable,
+    clippy::undocumented_unsafe_blocks,
+    clippy::as_conversions
+)]
+#![allow(
+    // Transitive duplicate versions are outside our control.
+    clippy::multiple_crate_versions,
+    // Error behaviour is documented at module level, not via per-fn
+    // Errors sections; the public surface is consumed internally.
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    // Function length is governed by cognitive-complexity, not lines.
+    clippy::too_many_lines,
+    // Licence/keyword metadata is a maintainer decision, not a lint.
+    clippy::cargo_common_metadata,
+)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing,
+        clippy::unreachable,
+        clippy::disallowed_methods,
+        clippy::future_not_send,
+        clippy::assert_is_empty,
+        // Fake store impls are async only because the real trait is.
+        clippy::unused_async_trait_impl,
+    )
+)]
 //! Engine-level tests: a fake in-memory store drives `Mirror` through the
 //! real event flows — source upsert → auto-reflect, source update → patch,
 //! source delete → delete reflections, namespace label change → rebalance.
@@ -134,6 +177,7 @@ impl ResourceStore<TestRes> for Arc<FakeStore> {
             return Err(ApiError::Conflict);
         }
         objects.insert(id, o.clone());
+        drop(objects);
         Ok(o)
     }
     async fn patch(&self, id: &NsName, patch: serde_json::Value) -> Result<(), ApiError> {
@@ -152,6 +196,7 @@ impl ResourceStore<TestRes> for Arc<FakeStore> {
                 _ => {}
             }
         }
+        drop(objects);
         Ok(())
     }
     async fn delete(&self, id: &NsName) -> Result<(), ApiError> {
@@ -175,9 +220,7 @@ fn ns(name: &str) -> Namespace {
     }
 }
 
-async fn mirror_with(
-    namespaces: Vec<Namespace>,
-) -> (Mirror<Arc<FakeStore>, TestRes>, Arc<FakeStore>) {
+fn mirror_with(namespaces: Vec<Namespace>) -> (Mirror<Arc<FakeStore>, TestRes>, Arc<FakeStore>) {
     let store = Arc::new(FakeStore::default());
     for n in namespaces {
         store.namespaces.lock().unwrap().insert(n.name.clone(), n);
@@ -187,7 +230,7 @@ async fn mirror_with(
 
 #[tokio::test]
 async fn source_upsert_auto_reflects_to_all_namespaces() {
-    let (mut m, store) = mirror_with(vec![ns("a"), ns("b"), ns("src")]).await;
+    let (mut m, store) = mirror_with(vec![ns("a"), ns("b"), ns("src")]);
     let src = src_secret("src", "creds", "10").data("k", "v");
     store.put(src.clone());
 
@@ -215,7 +258,7 @@ async fn source_upsert_auto_reflects_to_all_namespaces() {
 
 #[tokio::test]
 async fn source_update_patches_stale_reflections_only() {
-    let (mut m, store) = mirror_with(vec![ns("a"), ns("src")]).await;
+    let (mut m, store) = mirror_with(vec![ns("a"), ns("src")]);
     m.handle(Event::NamespaceUpsert(ns("a"))).await;
     m.handle(Event::NamespaceUpsert(ns("src"))).await;
 
@@ -236,7 +279,7 @@ async fn source_update_patches_stale_reflections_only() {
 
 #[tokio::test]
 async fn source_delete_removes_auto_reflections() {
-    let (mut m, store) = mirror_with(vec![ns("a"), ns("b"), ns("src")]).await;
+    let (mut m, store) = mirror_with(vec![ns("a"), ns("b"), ns("src")]);
     for n in ["a", "b", "src"] {
         m.handle(Event::NamespaceUpsert(ns(n))).await;
     }
@@ -250,7 +293,7 @@ async fn source_delete_removes_auto_reflections() {
 
 #[tokio::test]
 async fn disallowed_source_never_reflects() {
-    let (mut m, store) = mirror_with(vec![ns("a")]).await;
+    let (mut m, store) = mirror_with(vec![ns("a")]);
     m.handle(Event::NamespaceUpsert(ns("a"))).await;
     m.handle(Event::Upsert(TestRes::new("src", "creds").rv("1")))
         .await;
@@ -259,7 +302,7 @@ async fn disallowed_source_never_reflects() {
 
 #[tokio::test]
 async fn auto_namespaces_pattern_restricts_targets() {
-    let (mut m, store) = mirror_with(vec![ns("prod-a"), ns("dev-a"), ns("src")]).await;
+    let (mut m, store) = mirror_with(vec![ns("prod-a"), ns("dev-a"), ns("src")]);
     for n in ["prod-a", "dev-a", "src"] {
         m.handle(Event::NamespaceUpsert(ns(n))).await;
     }
@@ -276,7 +319,7 @@ async fn auto_namespaces_pattern_restricts_targets() {
 
 #[tokio::test]
 async fn namespace_label_change_rebalances_auto_reflections() {
-    let (mut m, store) = mirror_with(vec![]).await;
+    let (mut m, store) = mirror_with(vec![]);
     let mut ns_a = ns("a");
     ns_a.labels.insert("team".into(), "platform".into());
     let ns_b = ns("b");
@@ -311,7 +354,7 @@ async fn namespace_label_change_rebalances_auto_reflections() {
 
 #[tokio::test]
 async fn new_namespace_gets_existing_auto_sources() {
-    let (mut m, store) = mirror_with(vec![]).await;
+    let (mut m, store) = mirror_with(vec![]);
     store.insert_ns("src", &[]);
     m.handle(Event::NamespaceUpsert(ns("src"))).await;
     let src = src_secret("src", "creds", "10").data("k", "v");
@@ -326,7 +369,7 @@ async fn new_namespace_gets_existing_auto_sources() {
 
 #[tokio::test]
 async fn direct_reflection_syncs_when_source_changes() {
-    let (mut m, store) = mirror_with(vec![ns("src"), ns("tgt")]).await;
+    let (mut m, store) = mirror_with(vec![ns("src"), ns("tgt")]);
     m.handle(Event::NamespaceUpsert(ns("src"))).await;
     m.handle(Event::NamespaceUpsert(ns("tgt"))).await;
 
@@ -354,7 +397,7 @@ async fn direct_reflection_syncs_when_source_changes() {
 
 #[tokio::test]
 async fn source_disallowing_namespace_deletes_auto_reflection() {
-    let (mut m, store) = mirror_with(vec![ns("a"), ns("src")]).await;
+    let (mut m, store) = mirror_with(vec![ns("a"), ns("src")]);
     m.handle(Event::NamespaceUpsert(ns("a"))).await;
     m.handle(Event::NamespaceUpsert(ns("src"))).await;
 

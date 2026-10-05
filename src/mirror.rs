@@ -1,6 +1,8 @@
-//! Mirror engine — port of upstream `ResourceMirror<T>`: the state machine
-//! that tracks sources, direct reflections and auto-reflections and keeps
-//! the cluster converged on the annotation-declared desired state.
+//! Mirror engine — port of upstream `ResourceMirror<T>`.
+//!
+//! The state machine tracks sources, direct reflections and
+//! auto-reflections and keeps the cluster converged on the
+//! annotation-declared desired state.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -20,11 +22,12 @@ pub trait Mirrorable: Clone + Send + Sync + 'static {
         properties_from(self.annotations(), self.resource_version())
     }
     /// Shallow data-carrying clone for creating a new reflection —
-    /// upstream `OnResourceClone` (Secret: type+data; ConfigMap: data+
+    /// upstream `OnResourceClone` (Secret: type+data; `ConfigMap`: data+
     /// binaryData).
+    #[must_use]
     fn clone_for_reflection(&self) -> Self;
     /// JSON-patch ops covering the data fields — upstream
-    /// `OnResourceConfigurePatch` (Secret replaces `/data`; ConfigMap
+    /// `OnResourceConfigurePatch` (Secret replaces `/data`; `ConfigMap`
     /// replaces `/data` + `/binaryData`). Called on the *source* object.
     fn data_patch_ops(&self) -> Vec<serde_json::Value>;
     /// Set name/namespace/annotations on a freshly cloned reflection.
@@ -36,7 +39,7 @@ pub trait Mirrorable: Clone + Send + Sync + 'static {
     );
 }
 
-/// Error that distinguishes NotFound so `try_get` can cache it.
+/// Error that distinguishes `NotFound` so `try_get` can cache it.
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
     #[error("not found")]
@@ -50,7 +53,7 @@ pub enum ApiError {
 /// Cluster operations the engine needs — one impl per resource kind, backed
 /// by `kube::Api` in production and by a fake store in tests.
 #[allow(async_fn_in_trait)]
-pub trait ResourceStore<T: Mirrorable> {
+pub trait ResourceStore<T: Mirrorable>: Send + Sync {
     async fn get(&self, id: &NsName) -> Result<T, ApiError>;
     async fn list_by_name(&self, name: &str) -> Result<Vec<T>, ApiError>;
     async fn list_namespaces(&self) -> Result<Vec<Namespace>, ApiError>;
@@ -75,10 +78,12 @@ pub enum Event<T: Mirrorable> {
     NamespaceDelete(String),
 }
 
-/// Which watcher's caches to clear on session end — mirrors upstream
-/// `WatcherClosed` dispatch (a Namespace close clears only the namespace
-/// cache; a resource close clears the resource caches but keeps namespaces).
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Which watcher's caches to clear on session end.
+///
+/// Mirrors upstream `WatcherClosed` dispatch: a Namespace close clears only
+/// the namespace cache; a resource close clears the resource caches but
+/// keeps namespaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WatcherKind {
     Resource,
     Namespace,
@@ -156,7 +161,15 @@ impl<S: ResourceStore<T>, T: Mirrorable> Mirror<S, T> {
         self.last_warned_selector_errors.remove(&nn);
         let props = obj.properties();
 
-        if !props.is_reflection() {
+        if props.is_reflection() {
+            // A reflection vanished — drop it from both caches.
+            for set in self.direct_reflection_cache.values_mut() {
+                set.remove(&nn);
+            }
+            for set in self.auto_reflection_cache.values_mut() {
+                set.remove(&nn);
+            }
+        } else {
             // Source deleted → delete all its auto-reflections.
             if props.allowed
                 && props.auto_enabled
@@ -170,14 +183,6 @@ impl<S: ResourceStore<T>, T: Mirrorable> Mirror<S, T> {
             self.auto_sources.remove(&nn);
             self.direct_reflection_cache.remove(&nn);
             self.auto_reflection_cache.remove(&nn);
-        } else {
-            // A reflection vanished — drop it from both caches.
-            for set in self.direct_reflection_cache.values_mut() {
-                set.remove(&nn);
-            }
-            for set in self.auto_reflection_cache.values_mut() {
-                set.remove(&nn);
-            }
         }
     }
 
@@ -211,8 +216,7 @@ impl<S: ResourceStore<T>, T: Mirrorable> Mirror<S, T> {
                 let removed = self
                     .auto_reflection_cache
                     .get_mut(&source)
-                    .map(|s| s.remove(&reflection))
-                    .unwrap_or(false);
+                    .is_some_and(|s| s.remove(&reflection));
                 if removed {
                     debug!(
                         reflection = %reflection,
@@ -333,14 +337,13 @@ impl<S: ResourceStore<T>, T: Mirrorable> Mirror<S, T> {
         // Refresh permitted direct reflections whose stored version lags.
         if let Some(list) = self.direct_reflection_cache.get(nn).cloned() {
             for r in list {
-                let stale = match self.properties_cache.get(&r) {
-                    Some(rp) => rp.reflected_version != props.resource_version,
-                    None => {
-                        self.direct_reflection_cache
-                            .get_mut(nn)
-                            .map(|s| s.remove(&r));
-                        continue;
-                    }
+                let stale = if let Some(rp) = self.properties_cache.get(&r) {
+                    rp.reflected_version != props.resource_version
+                } else {
+                    self.direct_reflection_cache
+                        .get_mut(nn)
+                        .map(|s| s.remove(&r));
+                    continue;
                 };
                 if !stale {
                     debug!(reflection = %r, source = %nn, "source matches reflected version");
@@ -369,17 +372,16 @@ impl<S: ResourceStore<T>, T: Mirrorable> Mirror<S, T> {
 
         let source_props = match self.properties_cache.get(&source) {
             Some(p) => p.clone(),
-            None => match self.try_get(&source).await {
-                Some(s) => {
+            None => {
+                if let Some(s) = self.try_get(&source).await {
                     let p = s.properties();
                     self.properties_cache.insert(source.clone(), p.clone());
                     p
-                }
-                None => {
+                } else {
                     warn!(reflection = %nn, source = %source, "could not update - source not found");
                     return;
                 }
-            },
+            }
         };
 
         self.direct_reflection_cache
@@ -419,18 +421,17 @@ impl<S: ResourceStore<T>, T: Mirrorable> Mirror<S, T> {
 
         let source_props = match self.properties_cache.get(&source) {
             Some(p) => p.clone(),
-            None => match self.try_get(&source).await {
-                Some(s) => {
+            None => {
+                if let Some(s) = self.try_get(&source).await {
                     let p = s.properties();
                     self.properties_cache.insert(source.clone(), p.clone());
                     p
-                }
-                None => {
+                } else {
                     info!(source = %source, reflection = %nn, "source no longer exists - deleting reflection");
                     self.store.delete(nn).await.ok();
                     return;
                 }
-            },
+            }
         };
 
         if !self.can_be_auto_reflected_cached(&source_props, &nn.namespace) {
@@ -483,8 +484,7 @@ impl<S: ResourceStore<T>, T: Mirrorable> Mirror<S, T> {
             }
             let ns_ok = ns_lookup
                 .get(mnn.namespace.as_str())
-                .map(|ns| props.can_be_auto_reflected_to(&ns.name, Some(&ns.labels)))
-                .unwrap_or(false);
+                .is_some_and(|ns| props.can_be_auto_reflected_to(&ns.name, Some(&ns.labels)));
             if !ns_ok {
                 to_delete.push(mnn);
             } else if mp.reflected_version != props.resource_version {
@@ -509,9 +509,10 @@ impl<S: ResourceStore<T>, T: Mirrorable> Mirror<S, T> {
 
         let source_obj = match source_obj {
             Some(o) => Some(o),
-            None => match self.try_get(source).await {
-                Some(o) => Some(o),
-                None => {
+            None => {
+                if let Some(o) = self.try_get(source).await {
+                    Some(o)
+                } else {
                     let set = self
                         .auto_reflection_cache
                         .entry(source.clone())
@@ -534,7 +535,7 @@ impl<S: ResourceStore<T>, T: Mirrorable> Mirror<S, T> {
                     );
                     return;
                 }
-            },
+            }
         };
 
         {
@@ -588,33 +589,41 @@ impl<S: ResourceStore<T>, T: Mirrorable> Mirror<S, T> {
 
         let source_obj = match source_obj {
             Some(o) => o,
-            None => match self.try_get(source).await {
-                Some(o) => o,
-                None => {
+            None => {
+                if let Some(o) = self.try_get(source).await {
+                    o
+                } else {
                     warn!(reflection = %reflection, source = %source, "could not update - source not found");
                     return;
                 }
-            },
+            }
         };
 
         // Upstream writes .NET bool.ToString() - capitalized True/False.
-        let meta = json!({
-            annotations::META_AUTO_REFLECTS: if auto { "True" } else { "False" },
-            annotations::REFLECTS: source.to_string(),
-            annotations::META_REFLECTED_VERSION: source_obj.resource_version(),
-            annotations::META_REFLECTED_AT: chrono_free_now(),
-        });
+        let meta = BTreeMap::from([
+            (
+                annotations::META_AUTO_REFLECTS.to_string(),
+                if auto { "True" } else { "False" }.to_string(),
+            ),
+            (annotations::REFLECTS.to_string(), source.to_string()),
+            (
+                annotations::META_REFLECTED_VERSION.to_string(),
+                source_obj.resource_version().to_string(),
+            ),
+            (
+                annotations::META_REFLECTED_AT.to_string(),
+                chrono_free_now(),
+            ),
+        ]);
 
         match reflection_obj {
             None => {
                 let mut new_obj = source_obj.clone_for_reflection();
-                let anns: BTreeMap<String, String> = meta
-                    .as_object()
-                    .unwrap()
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
-                    .collect();
-                new_obj.set_name_ns_annotations(&reflection.name, &reflection.namespace, anns);
+                new_obj.set_name_ns_annotations(
+                    &reflection.name,
+                    &reflection.namespace,
+                    meta.clone(),
+                );
                 match self.store.create(&new_obj, &reflection.namespace).await {
                     Ok(_) => {
                         info!(reflection = %reflection, source = %source, "created reflection");
@@ -623,7 +632,7 @@ impl<S: ResourceStore<T>, T: Mirrorable> Mirror<S, T> {
                         // Exists but wasn't in our list — fall through to patch.
                         match self.store.get(reflection).await {
                             Ok(existing) => {
-                                self.patch_reflection(&source_obj, &existing, reflection, meta)
+                                self.patch_reflection(&source_obj, &existing, reflection, &meta)
                                     .await;
                             }
                             Err(_) => {
@@ -632,7 +641,7 @@ impl<S: ResourceStore<T>, T: Mirrorable> Mirror<S, T> {
                         }
                     }
                     Err(e) => {
-                        warn!(reflection = %reflection, error = %e, "could not create reflection")
+                        warn!(reflection = %reflection, error = %e, "could not create reflection");
                     }
                 }
             }
@@ -641,25 +650,23 @@ impl<S: ResourceStore<T>, T: Mirrorable> Mirror<S, T> {
                     debug!(reflection = %reflection, source = %source, "source matches reflected version");
                     return;
                 }
-                self.patch_reflection(&source_obj, &existing, reflection, meta)
+                self.patch_reflection(&source_obj, &existing, reflection, &meta)
                     .await;
             }
         }
     }
 
     async fn patch_reflection(
-        &mut self,
+        &self,
         source: &T,
         existing: &T,
         reflection: &NsName,
-        meta: serde_json::Value,
+        meta: &BTreeMap<String, String>,
     ) {
         // Upstream JSON-patch: replace annotations wholesale (reflection's
         // annotations + the four meta keys) and replace the data fields.
         let mut anns = existing.annotations().cloned().unwrap_or_default();
-        for (k, v) in meta.as_object().unwrap() {
-            anns.insert(k.clone(), v.as_str().unwrap().to_string());
-        }
+        anns.extend(meta.clone());
         let mut ops: Vec<serde_json::Value> = vec![json!({
             "op": "add",
             "path": "/metadata/annotations",
@@ -669,7 +676,7 @@ impl<S: ResourceStore<T>, T: Mirrorable> Mirror<S, T> {
         let patch = json!(ops);
         match self.store.patch(reflection, patch).await {
             Ok(()) => {
-                info!(reflection = %reflection, source = %source.nsname(), "patched reflection")
+                info!(reflection = %reflection, source = %source.nsname(), "patched reflection");
             }
             Err(e) => warn!(reflection = %reflection, error = %e, "could not reflect"),
         }
@@ -733,21 +740,26 @@ impl<S: ResourceStore<T>, T: Mirrorable> Mirror<S, T> {
     }
 }
 
-/// Upstream writes `reflected-at` as `DateTimeOffset.UtcNow` "O" format —
-/// ISO-8601 UTC. Computed from the epoch without a chrono dep.
+/// ISO-8601 UTC `reflected-at` timestamp.
+///
+/// Upstream writes `reflected-at` as `DateTimeOffset.UtcNow` "O" format.
+/// Computed from the epoch without a chrono dep.
+#[allow(clippy::many_single_char_names)] // Hinnant's canonical variable names.
 fn chrono_free_now() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0) as i64;
+    let secs = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs()),
+    )
+    .unwrap_or(i64::MAX);
     let days = secs.div_euclid(86400);
     let rem = secs.rem_euclid(86400);
     let (h, m, s) = (rem / 3600, rem % 3600 / 60, rem % 60);
     // Civil-from-days (Howard Hinnant's algorithm).
-    let z = days + 719468;
-    let era = z.div_euclid(146097);
-    let doe = z.rem_euclid(146097);
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;

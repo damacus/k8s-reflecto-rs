@@ -9,20 +9,28 @@ use regex::Regex;
 
 // Kubernetes label name: 1-63 chars, alphanumeric plus _ . -, must
 // start/end alphanumeric.
+// Literal patterns — validity is covered by the selector tests below.
+#[allow(clippy::unwrap_used)]
 static LABEL_NAME_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?$").unwrap());
 
 // Kubernetes label key prefix: DNS subdomain.
+// Literal pattern — validity is covered by the selector tests below.
+#[allow(clippy::unwrap_used)]
 static LABEL_PREFIX_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$")
         .unwrap()
 });
 
 // Kubernetes label value: up to 63 chars, same rules (empty allowed).
+// Literal pattern — validity is covered by the selector tests below.
+#[allow(clippy::unwrap_used)]
 static LABEL_VALUE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^([A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?)?$").unwrap());
 
 // "<key> in (<values>)" / "<key> notin (<values>)".
+// Literal pattern — validity is covered by the selector tests below.
+#[allow(clippy::unwrap_used)]
 static SET_BASED_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?<key>\S+)\s+(?<op>in|notin)\s*\((?<values>[^)]*)\)$").unwrap()
 });
@@ -38,13 +46,7 @@ pub fn pattern_list_match(pattern_list: &str, value: &str) -> bool {
         .map(str::trim)
         .filter(|p| !p.is_empty())
         .any(|p| {
-            Regex::new(p)
-                .map(|re| {
-                    re.find(value)
-                        .map(|m| m.len() == value.len())
-                        .unwrap_or(false)
-                })
-                .unwrap_or(false)
+            Regex::new(p).is_ok_and(|re| re.find(value).is_some_and(|m| m.len() == value.len()))
         })
 }
 
@@ -69,7 +71,7 @@ enum SetOp {
     NotIn,
 }
 
-/// A parsed Kubernetes label selector — requirements ANDed together.
+/// A parsed Kubernetes label selector — requirements `ANDed` together.
 pub struct LabelSelector(Vec<Requirement>);
 
 impl LabelSelector {
@@ -101,7 +103,8 @@ impl LabelSelector {
         }
     }
 
-    /// All requirements must hold (AND semantics, like upstream MatchesLabels).
+    /// All requirements must hold (AND semantics, like upstream `MatchesLabels`).
+    #[must_use]
     pub fn matches(&self, labels: &BTreeMap<String, String>) -> bool {
         self.0.iter().all(|r| match r {
             Requirement::MatchLabel(k, v) => labels.get(k) == Some(v),
@@ -217,10 +220,10 @@ fn parse_requirement(req: &str) -> Result<Requirement, Vec<String>> {
     }
 
     // Existence `key` / `!key`.
-    let (negate, key) = match req.strip_prefix('!') {
-        Some(rest) => (true, rest.trim().to_string()),
-        None => (false, req.trim().to_string()),
-    };
+    let (negate, key) = req.strip_prefix('!').map_or_else(
+        || (false, req.trim().to_string()),
+        |rest| (true, rest.trim().to_string()),
+    );
     if is_valid_label_key(&key) {
         return Ok(Requirement::Exists { key, negate });
     }
@@ -256,12 +259,14 @@ pub struct MatchNamespace<'a> {
 }
 
 impl<'a> MatchNamespace<'a> {
-    pub fn new(patterns: &'a str, selector: &'a str) -> Self {
+    #[must_use]
+    pub const fn new(patterns: &'a str, selector: &'a str) -> Self {
         Self { patterns, selector }
     }
 
     /// `ns_labels: None` when the namespace object isn't cached — fail closed
     /// if a selector is configured (upstream `CanBeReflectedToNamespaceCached`).
+    #[must_use]
     pub fn matches(&self, ns: &str, ns_labels: Option<&BTreeMap<String, String>>) -> bool {
         let has_patterns = !self.patterns.is_empty();
         let has_selector = !self.selector.is_empty();
@@ -274,13 +279,10 @@ impl<'a> MatchNamespace<'a> {
         if !has_selector {
             return false;
         }
-        match ns_labels {
-            // Selector configured but namespace object not available → closed.
-            None => false,
-            Some(labels) => LabelSelector::parse(self.selector)
-                .map(|s| s.matches(labels))
-                .unwrap_or(false),
-        }
+        // Selector configured but namespace object not available → closed.
+        ns_labels.is_some_and(|labels| {
+            LabelSelector::parse(self.selector).is_ok_and(|s| s.matches(labels))
+        })
     }
 }
 
@@ -307,11 +309,10 @@ pub fn parse_glob_patterns(patterns: &str) -> Vec<Regex> {
         .collect()
 }
 
+#[must_use]
 pub fn is_namespace_excluded(ns: Option<&str>, patterns: &[Regex]) -> bool {
-    match ns {
-        None => false, // cluster-scoped events are never excluded
-        Some(ns) => !ns.is_empty() && patterns.iter().any(|p| p.is_match(ns)),
-    }
+    // Cluster-scoped events (None) are never excluded.
+    ns.is_some_and(|ns| !ns.is_empty() && patterns.iter().any(|p| p.is_match(ns)))
 }
 
 #[cfg(test)]

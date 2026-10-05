@@ -1,3 +1,44 @@
+#![warn(
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::cargo,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::exit,
+    clippy::dbg_macro,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::unreachable,
+    clippy::undocumented_unsafe_blocks,
+    clippy::as_conversions
+)]
+#![allow(
+    // Transitive duplicate versions are outside our control.
+    clippy::multiple_crate_versions,
+    // Error behaviour is documented at module level, not via per-fn
+    // Errors sections; the public surface is consumed internally.
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    // Function length is governed by cognitive-complexity, not lines.
+    clippy::too_many_lines,
+    // Licence/keyword metadata is a maintainer decision, not a lint.
+    clippy::cargo_common_metadata,
+)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing,
+        clippy::unreachable,
+        clippy::disallowed_methods,
+        clippy::future_not_send,
+        clippy::assert_is_empty,
+    )
+)]
 use k8s_openapi::api::core::v1::{ConfigMap, Namespace as K8sNamespace, Secret};
 use kube::Client;
 use tokio::sync::mpsc;
@@ -22,6 +63,8 @@ const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 async fn main() {
     let code = run().await;
     if code != 0 {
+        // The one deliberate lifecycle exit point.
+        #[allow(clippy::disallowed_methods)]
         std::process::exit(code);
     }
 }
@@ -127,7 +170,7 @@ async fn run() -> i32 {
                 },
                 _phantom: std::marker::PhantomData,
             })
-            .await
+            .await;
         });
     }
     drop(tx);
@@ -152,13 +195,13 @@ async fn run() -> i32 {
                 match d {
                     Dispatch::Secret(o) => secret_mirror.handle(mirror::Event::Upsert(o)).await,
                     Dispatch::SecretDeleted(o) => {
-                        secret_mirror.handle(mirror::Event::Delete(o)).await
+                        secret_mirror.handle(mirror::Event::Delete(o)).await;
                     }
                     Dispatch::ConfigMap(o) => {
-                        configmap_mirror.handle(mirror::Event::Upsert(o)).await
+                        configmap_mirror.handle(mirror::Event::Upsert(o)).await;
                     }
                     Dispatch::ConfigMapDeleted(o) => {
-                        configmap_mirror.handle(mirror::Event::Delete(o)).await
+                        configmap_mirror.handle(mirror::Event::Delete(o)).await;
                     }
                     Dispatch::Namespace(ns) => {
                         secret_mirror
@@ -177,10 +220,10 @@ async fn run() -> i32 {
                             .await;
                     }
                     Dispatch::Closed(WatcherKind::Secret) => {
-                        secret_mirror.watcher_closed(mirror::WatcherKind::Resource)
+                        secret_mirror.watcher_closed(mirror::WatcherKind::Resource);
                     }
                     Dispatch::Closed(WatcherKind::ConfigMap) => {
-                        configmap_mirror.watcher_closed(mirror::WatcherKind::Resource)
+                        configmap_mirror.watcher_closed(mirror::WatcherKind::Resource);
                     }
                     Dispatch::Closed(WatcherKind::Namespace) => {
                         secret_mirror.watcher_closed(mirror::WatcherKind::Namespace);
@@ -205,7 +248,7 @@ async fn run() -> i32 {
     }
 
     tokio::select! {
-        _ = wait_for_shutdown() => {
+        () = wait_for_shutdown() => {
             info!("shutdown signal received, stopping");
         }
         res = tasks.join_next() => {
@@ -232,8 +275,16 @@ async fn wait_for_shutdown() {
     let mut term = signal(SignalKind::terminate()).ok();
     let mut int = signal(SignalKind::interrupt()).ok();
     tokio::select! {
-        _ = async { term.as_mut().unwrap().recv().await }, if term.is_some() => {}
-        _ = async { int.as_mut().unwrap().recv().await }, if int.is_some() => {}
+        () = async {
+            if let Some(t) = term.as_mut() {
+                let _ = t.recv().await;
+            }
+        }, if term.is_some() => {}
+        () = async {
+            if let Some(t) = int.as_mut() {
+                let _ = t.recv().await;
+            }
+        }, if int.is_some() => {}
         _ = tokio::signal::ctrl_c() => {}
     }
 }
