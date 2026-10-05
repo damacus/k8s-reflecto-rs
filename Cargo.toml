@@ -1,6 +1,6 @@
 [package]
 name = "kubernetes-reflector-rs"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "MIT"
 description = "Rust port of emberstack/kubernetes-reflector: mirrors Secrets and ConfigMaps across namespaces via annotations"
