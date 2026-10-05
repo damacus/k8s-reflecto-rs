@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/damacus/k8s-reflecto-rs/compare/v0.1.4...v0.1.5) (2026-10-05)
+
+
+### Bug Fixes
+
+* rename to k8s-reflecto-rs ([fb8ae8d](https://github.com/damacus/k8s-reflecto-rs/commit/fb8ae8d8a10affe0346b135314d0114ba49d5075))
+
 ## [0.1.4](https://github.com/damacus/k8s-reflector-rs/compare/v0.1.3...v0.1.4) (2026-10-05)
 
 
