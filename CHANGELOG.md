@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.4](https://github.com/damacus/k8s-reflector-rs/compare/v0.1.3...v0.1.4) (2026-10-05)
+
+
+### Bug Fixes
+
+* honor ES_Ignite__KubernetesClient__SkipTlsVerify ([3e6fe19](https://github.com/damacus/k8s-reflector-rs/commit/3e6fe19eaecf18a00805c3dc9b1576b615b4eead))
+* validate reflected namespace/name against DNS-1123 ([908922f](https://github.com/damacus/k8s-reflector-rs/commit/908922fbabe2836cc8cb837d2f3c9841d7c83bb7))
+
 ## [0.1.3](https://github.com/damacus/k8s-reflector-rs/compare/v0.1.2...v0.1.3) (2026-10-05)
 
 
