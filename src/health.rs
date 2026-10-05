@@ -63,10 +63,9 @@ impl HealthState {
         }
     }
 
-    pub fn probe(&self) -> (u16, &'static str) {
-        if !self.ready.load(Ordering::SeqCst) {
-            return (503, "NOT READY");
-        }
+    /// Liveness — watcher tasks alive and each stream has had API contact
+    /// within its staleness window. Readiness is not required.
+    pub fn live(&self) -> (u16, &'static str) {
         let inner = self.inner.lock().unwrap();
         if inner.alive.values().any(|a| !*a) {
             return (503, "NOT LIVE (watcher task died)");
@@ -80,6 +79,14 @@ impl HealthState {
             return (503, "NOT LIVE (K8s contact lost)");
         }
         (200, "OK")
+    }
+
+    /// Readiness+liveness — the combined probe.
+    pub fn probe(&self) -> (u16, &'static str) {
+        if !self.ready.load(Ordering::SeqCst) {
+            return (503, "NOT READY");
+        }
+        self.live()
     }
 }
 
@@ -139,6 +146,16 @@ pub async fn serve(state: Arc<HealthState>, port: u16, cancel: CancellationToken
     let _ = tokio::task::spawn_blocking(move || accept_thread.join()).await;
 }
 
+/// Path → probe. `/health/live` and `/health/ready` match upstream's
+/// ASP.NET health endpoints so its chart probes work unchanged.
+fn route(path: &str, state: &HealthState) -> (u16, &'static str) {
+    match path {
+        "/health/live" => state.live(),
+        "/health/ready" | "/healthz" => state.probe(),
+        _ => (404, "Not Found"),
+    }
+}
+
 const MAX_REQUEST_BYTES: u64 = 8 * 1024;
 
 fn handle(stream: std::net::TcpStream, state: Arc<HealthState>) {
@@ -162,11 +179,7 @@ fn handle(stream: std::net::TcpStream, state: Arc<HealthState>) {
         }
     }
 
-    let (status, body) = if path == "/healthz" {
-        state.probe()
-    } else {
-        (404, "Not Found")
-    };
+    let (status, body) = route(path, &state);
     let reason = match status {
         200 => "OK",
         404 => "Not Found",
@@ -177,4 +190,52 @@ fn handle(stream: std::net::TcpStream, state: Arc<HealthState>) {
         "HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state() -> Arc<HealthState> {
+        let h = HealthState::new();
+        h.register_stream("s", Duration::from_secs(60));
+        h
+    }
+
+    #[test]
+    fn live_ignores_readiness() {
+        let h = state();
+        // Not marked ready, but the stream is alive and fresh.
+        assert_eq!(route("/health/live", &h).0, 200);
+        assert_eq!(route("/healthz", &h).0, 503);
+        assert_eq!(route("/health/ready", &h).0, 503);
+        h.mark_ready();
+        assert_eq!(route("/health/ready", &h).0, 200);
+    }
+
+    #[test]
+    fn dead_stream_fails_both_probes() {
+        let h = state();
+        h.mark_ready();
+        h.stream_dead("s");
+        assert_eq!(route("/health/live", &h).0, 503);
+        assert_eq!(route("/health/ready", &h).0, 503);
+    }
+
+    #[test]
+    fn stale_contact_fails_liveness() {
+        let h = HealthState::new();
+        // Zero heartbeat — any elapsed time is stale.
+        h.register_stream("s", Duration::ZERO);
+        h.mark_ready();
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(route("/health/live", &h).0, 503);
+    }
+
+    #[test]
+    fn unknown_path_404s() {
+        let h = state();
+        assert_eq!(route("/nope", &h), (404, "Not Found"));
+    }
 }
