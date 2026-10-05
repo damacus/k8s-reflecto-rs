@@ -778,4 +778,25 @@ mod tests {
         assert!(NsName::parse("ab").is_none());
         assert!(NsName::parse("/b").is_none());
     }
+
+    #[test]
+    fn nsname_rejects_non_dns1123_segments() {
+        // Annotation-controlled values reach API request paths — segments
+        // must be valid DNS-1123 so they cannot smuggle path/query syntax.
+        for bad in [
+            "../x",    // path traversal
+            "a?x/y",   // query injection
+            "a%2fb/x", // encoded slash
+            "A-B/x",   // uppercase
+            "a b/x",   // space
+            "a_ns/x",  // underscore illegal in ns
+            "-a/x",    // leading dash
+            "a/-x", "a/x-", "a#frag/x", // fragment
+        ] {
+            assert!(NsName::parse(bad).is_none(), "{bad} should be rejected");
+        }
+        for good in ["kube-system/pod-1", "ns-dots/obj.name", "a0/x0"] {
+            assert!(NsName::parse(good).is_some(), "{good} should be valid");
+        }
+    }
 }

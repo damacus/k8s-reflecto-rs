@@ -50,7 +50,10 @@ impl NsName {
 
     pub fn parse(s: &str) -> Option<Self> {
         let (ns, name) = s.split_once('/')?;
-        if ns.is_empty() || name.is_empty() || name.contains('/') {
+        // Segments flow into API request paths and object identities — only
+        // accept legal Kubernetes identifiers so annotation values cannot
+        // smuggle path/query syntax into API calls.
+        if !is_dns_label(ns) || !is_dns_subdomain(name) || name.contains('/') {
             return None;
         }
         Some(Self::new(ns, name))
@@ -61,6 +64,22 @@ impl NsName {
     pub fn in_namespace(&self, namespace: &str) -> Self {
         Self::new(namespace, &self.name)
     }
+}
+
+/// DNS-1123 label — namespace names.
+fn is_dns_label(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    !s.is_empty()
+        && s.len() <= 63
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes[bytes.len() - 1].is_ascii_alphanumeric()
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// DNS-1123 subdomain — resource names (labels separated by dots).
+fn is_dns_subdomain(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 253 && s.split('.').all(is_dns_label)
 }
 
 impl fmt::Display for NsName {
