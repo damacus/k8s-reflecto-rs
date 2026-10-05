@@ -192,7 +192,6 @@ fn handle(stream: std::net::TcpStream, state: Arc<HealthState>) {
     );
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
